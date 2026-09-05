@@ -1,0 +1,51 @@
+{
+  "name": "pi-imagegen-multi-model",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Codex-style image generation and editing for Pi with OpenAI GPT Image, Google Imagen, Gemini Image, and custom OpenAI-compatible models.",
+  "type": "module",
+  "module": "src/index.ts",
+  "license": "Apache-2.0",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi-skill",
+    "image-generation",
+    "gpt-image",
+    "imagen",
+    "gemini-image"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.84.4",
+    "@earendil-works/pi-coding-agent": "^0.84.4",
+    "@types/node": "^22.19.19",
+    "typescript": "^5.9.3"
+  },
+  "files": [
+    "src",
+    "skills",
+    "README.md",
+    "imagegen.example.json",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

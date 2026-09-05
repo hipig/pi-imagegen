@@ -1,0 +1,38 @@
+{
+  "defaultModel": "codex-subscription",
+  "outputDir": "output/imagegen",
+  "requestTimeoutMs": 300000,
+  "maxAttempts": 3,
+  "maxImageBytes": 52428800,
+  "maxResponseBytes": 125829120,
+  "inlinePreviewLimit": 4,
+  "models": {
+    "local-flux": {
+      "adapter": "openai-images",
+      "model": "flux.1-dev",
+      "baseUrl": "http://127.0.0.1:8000/v1",
+      "apiKeyEnv": null,
+      "description": "Local OpenAI-compatible Flux endpoint.",
+      "capabilities": {
+        "generate": true,
+        "edit": false,
+        "references": false,
+        "mask": false,
+        "transparency": false,
+        "inputFidelity": false,
+        "maxInputImages": 0,
+        "maxOutputsPerRequest": 4
+      }
+    },
+    "private-image-gateway": {
+      "adapter": "openai-images",
+      "model": "my-image-model",
+      "baseUrl": "https://images.example.com/v1",
+      "apiKeyEnv": null,
+      "headers": {
+        "Authorization": "Bearer ${PRIVATE_IMAGE_API_KEY}"
+      },
+      "description": "Example authenticated OpenAI-compatible gateway."
+    }
+  }
+}
