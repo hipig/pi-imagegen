@@ -58,6 +58,12 @@ function validateRequest(input: AdapterRequest): { input: AdapterRequest; warnin
   const capabilities = model.capabilities;
   const n = request.n ?? 1;
   const warnings: string[] = [];
+  let normalizedRequest = request;
+
+  if (request.mode === "generate" && request.inputFidelity !== undefined) {
+    normalizedRequest = { ...request, inputFidelity: undefined };
+    warnings.push("inputFidelity applies only to edit mode; it was ignored for generation.");
+  }
 
   if (!Number.isInteger(n) || n < 1 || n > 10) throw new Error("n must be an integer between 1 and 10.");
   if (!capabilities.generate) throw new Error(`Model '${model.id}' is not configured for image generation.`);
@@ -78,7 +84,7 @@ function validateRequest(input: AdapterRequest): { input: AdapterRequest; warnin
   if (request.background === "transparent" && request.outputFormat && !["png", "webp"].includes(request.outputFormat)) {
     throw new Error("Transparent output requires PNG or WebP format.");
   }
-  if (request.inputFidelity && !capabilities.inputFidelity) {
+  if (normalizedRequest.inputFidelity && !capabilities.inputFidelity) {
     throw new Error(`Model '${model.id}' does not support inputFidelity.`);
   }
   if (request.outputCompression !== undefined && (!Number.isInteger(request.outputCompression) || request.outputCompression < 0 || request.outputCompression > 100)) {
@@ -100,9 +106,8 @@ function validateRequest(input: AdapterRequest): { input: AdapterRequest; warnin
     throw new Error("aspectRatio must use WIDTH:HEIGHT syntax, for example 16:9.");
   }
 
-  let normalizedRequest = request;
   if (model.adapter === "google-imagen" || model.adapter === "google-gemini") {
-    const dimensions = normalizeGoogleDimensions(request, model.adapter);
+    const dimensions = normalizeGoogleDimensions(normalizedRequest, model.adapter);
     normalizedRequest = dimensions.request;
     warnings.push(...dimensions.warnings);
     if (request.quality !== undefined) warnings.push(`${model.adapter} ignores quality; use imageSize instead.`);

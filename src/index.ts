@@ -27,6 +27,7 @@ import {
   saveGeneratedImages,
 } from "./files.ts";
 import { buildFinalPrompt, IMAGE_USE_CASES } from "./prompt.ts";
+import { createProxyAwareFetch } from "./proxy-fetch.ts";
 import type {
   AdapterRuntime,
   GeneratedImage,
@@ -275,7 +276,11 @@ function completionText(details: ImagegenToolDetails): string {
 }
 
 export function createImagegenExtension(dependencies: ImagegenExtensionDependencies = {}) {
-  const fetchImpl = dependencies.fetch ?? globalThis.fetch;
+  const proxyFetch = dependencies.fetch ? undefined : createProxyAwareFetch(currentEnv(dependencies));
+  const fetchImpl = dependencies.fetch ?? proxyFetch!.fetch;
+  const transportWarning = proxyFetch?.proxyEnabled
+    ? "HTTP(S) proxy environment detected; provider requests will use it."
+    : undefined;
 
   return function imagegenExtension(pi: ExtensionAPI): void {
     pi.registerTool(
@@ -297,7 +302,11 @@ export function createImagegenExtension(dependencies: ImagegenExtensionDependenc
           const inputImages = await loadInputImages(request.imagePaths ?? [], ctx.cwd, config.maxImageBytes);
           const mask = request.maskPath ? await loadMask(request.maskPath, ctx.cwd, config.maxImageBytes) : undefined;
           const finalPrompt = buildFinalPrompt(request);
-          const baseWarnings = [...config.warnings, ...(selected.warning ? [selected.warning] : [])];
+          const baseWarnings = [
+            ...config.warnings,
+            ...(selected.warning ? [selected.warning] : []),
+            ...(transportWarning ? [transportWarning] : []),
+          ];
 
           onUpdate?.({
             content: [{ type: "text", text: `${request.dryRun ? "Validating" : "Generating"} with ${model.id}…` }],

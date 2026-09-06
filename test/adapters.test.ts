@@ -225,6 +225,34 @@ test("Codex subscription generation uses the direct ChatGPT image endpoint contr
   assert.match(result.warnings.join("\n"), /independent requests/);
 });
 
+test("Codex subscription generation ignores forced input fidelity", async () => {
+  const fetchMock = (async () =>
+    new Response(
+      JSON.stringify({ created: 1, background: "opaque", data: [{ b64_json: PNG_BASE64 }] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )) as typeof globalThis.fetch;
+
+  const result = await runImageAdapter(
+    baseRequest({
+      model: model("codex-subscription"),
+      request: {
+        mode: "generate",
+        prompt: "A blue paper airplane",
+        inputFidelity: "low",
+      },
+    }),
+    runtime(fetchMock, {
+      CODEX_ACCESS_TOKEN: "test-access-token",
+      CHATGPT_ACCOUNT_ID: "account-123",
+      PI_IMAGEGEN_CODEX_TEST_BASE_URL: "http://127.0.0.1:9123/api/codex",
+      PI_IMAGEGEN_ALLOW_CODEX_TEST_ENDPOINT: "1",
+    }),
+  );
+
+  assert.equal(result.images.length, 1);
+  assert.match(result.warnings.join("\n"), /inputFidelity applies only to edit mode/);
+});
+
 test("Codex subscription edits send reference images as JSON data URLs", async () => {
   let capturedBody: Record<string, unknown> = {};
   const fetchMock = (async (_input: RequestInfo | URL, init?: RequestInit) => {
