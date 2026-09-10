@@ -1,10 +1,4 @@
-import type { CodexSubscriptionCredentials } from "./codex-auth.ts";
-
-export type ImageAdapterName =
-  | "codex-subscription"
-  | "openai-images"
-  | "google-imagen"
-  | "google-gemini";
+export type ImageAdapterName = "openai-images";
 
 export type ImageMode = "generate" | "edit";
 export type ImageQuality = "low" | "medium" | "high" | "auto";
@@ -30,12 +24,16 @@ export interface ImageModelDefinition {
   adapter: ImageAdapterName;
   /** Upstream model identifier. */
   model: string;
-  baseUrl: string;
-  /** Environment variable containing the credential. Omit for keyless local endpoints. */
-  apiKeyEnv?: string;
-  headers: Record<string, string>;
   description: string;
   capabilities: ModelCapabilities;
+}
+
+export interface ImageProviderRoute {
+  /** Active Pi provider whose API key and endpoint are reused. */
+  provider: string;
+  api: string;
+  baseUrl: string;
+  headers: Record<string, string>;
 }
 
 export interface ImagegenConfig {
@@ -82,13 +80,6 @@ export interface ImageGenRequest extends PromptFields {
   outputCompression?: number;
   inputFidelity?: InputFidelity;
   moderation?: "auto" | "low";
-  aspectRatio?: string;
-  imageSize?: "1K" | "2K" | "4K";
-  personGeneration?: "dont_allow" | "allow_adult";
-  safetyFilterLevel?: "block_low_and_above" | "block_medium_and_above" | "block_only_high";
-  seed?: number;
-  enhancePrompt?: boolean;
-  addWatermark?: boolean;
   outputPath?: string;
   outputDir?: string;
   overwrite?: boolean;
@@ -127,8 +118,7 @@ export interface AdapterResult {
 
 export interface AdapterRuntime {
   fetch: typeof globalThis.fetch;
-  env: Record<string, string | undefined>;
-  resolveCodexSubscriptionCredentials?: () => Promise<CodexSubscriptionCredentials>;
+  route: ImageProviderRoute;
   signal?: AbortSignal;
   requestTimeoutMs: number;
   maxAttempts: number;
@@ -148,6 +138,9 @@ export interface ImagegenToolDetails {
   model: string;
   upstreamModel: string;
   adapter: ImageAdapterName;
+  provider: string;
+  providerApi: string;
+  baseUrl: string;
   prompt: string;
   paths: string[];
   downscaledPaths: string[];

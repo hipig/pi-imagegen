@@ -1,5 +1,4 @@
 import { basename } from "node:path";
-import { resolveModelHeaders } from "../config.ts";
 import { decodeBase64Image, detectImageMime } from "../files.ts";
 import { requestBinary, requestJson } from "../http.ts";
 import type {
@@ -118,7 +117,7 @@ export async function runOpenAIImages(
   const n = request.n ?? 1;
   const format = request.outputFormat ?? "png";
   const usesEditEndpoint = request.mode === "edit" || inputImages.length > 0;
-  const url = endpoint(model.baseUrl, usesEditEndpoint ? "images/edits" : "images/generations");
+  const url = endpoint(runtime.route.baseUrl, usesEditEndpoint ? "images/edits" : "images/generations");
 
   const maxPerRequest = Math.max(1, model.capabilities.maxOutputsPerRequest);
   const basePayload = compactObject({
@@ -139,6 +138,9 @@ export async function runOpenAIImages(
       providerText: [],
       warnings: [],
       requestPreview: {
+        provider: runtime.route.provider,
+        providerApi: runtime.route.api,
+        url,
         endpoint: usesEditEndpoint ? "/v1/images/edits" : "/v1/images/generations",
         method: "POST",
         requests: Math.ceil(n / maxPerRequest),
@@ -154,7 +156,7 @@ export async function runOpenAIImages(
     };
   }
 
-  const headers = resolveModelHeaders(model, runtime.env);
+  const headers = runtime.route.headers;
   const images: GeneratedImage[] = [];
 
   while (images.length < n) {

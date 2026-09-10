@@ -7,13 +7,6 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { runImageAdapter } from "./adapters/index.ts";
 import {
-  credentialsFromCodexAccessToken,
-  inspectCodexSubscriptionAuth,
-  readCodexSubscriptionCredentials,
-  type CodexSubscriptionCredentials,
-} from "./codex-auth.ts";
-import {
-  credentialStatus,
   loadImagegenConfig,
   resolveGlobalImagegenConfigPath,
   resolveProjectImagegenConfigPath,
@@ -32,8 +25,12 @@ import type {
   AdapterRuntime,
   GeneratedImage,
   ImageGenRequest,
+  ImageProviderRoute,
   ImagegenToolDetails,
 } from "./types.ts";
+
+const SUPPORTED_PROVIDER_APIS = new Set(["openai-completions", "openai-responses"]);
+const REQUEST_OWNED_HEADERS = new Set(["connection", "content-length", "content-type", "host", "transfer-encoding"]);
 
 const imageGenParameters = Type.Object({
   prompt: Type.String({
@@ -64,7 +61,7 @@ const imageGenParameters = Type.Object({
   ),
   n: Type.Optional(Type.Integer({ description: "Number of output images (1-10).", minimum: 1, maximum: 10 })),
   size: Type.Optional(
-    Type.String({ description: "OpenAI size (auto or WIDTHxHEIGHT). Google maps exact ratios to aspectRatio." }),
+    Type.String({ description: "OpenAI Images size: auto or a provider-supported WIDTHxHEIGHT value." }),
   ),
   quality: Type.Optional(StringEnum(["low", "medium", "high", "auto"] as const)),
   background: Type.Optional(StringEnum(["transparent", "opaque", "auto"] as const)),
@@ -72,15 +69,6 @@ const imageGenParameters = Type.Object({
   outputCompression: Type.Optional(Type.Integer({ minimum: 0, maximum: 100 })),
   inputFidelity: Type.Optional(StringEnum(["low", "high"] as const)),
   moderation: Type.Optional(StringEnum(["auto", "low"] as const)),
-  aspectRatio: Type.Optional(Type.String({ description: "Provider-native ratio such as 1:1, 16:9, or 4:3." })),
-  imageSize: Type.Optional(StringEnum(["1K", "2K", "4K"] as const)),
-  personGeneration: Type.Optional(StringEnum(["dont_allow", "allow_adult"] as const)),
-  safetyFilterLevel: Type.Optional(
-    StringEnum(["block_low_and_above", "block_medium_and_above", "block_only_high"] as const),
-  ),
-  seed: Type.Optional(Type.Integer({ minimum: 0, maximum: 2_147_483_647 })),
-  enhancePrompt: Type.Optional(Type.Boolean()),
-  addWatermark: Type.Optional(Type.Boolean()),
   useCase: Type.Optional(StringEnum(IMAGE_USE_CASES, { description: "Production use-case taxonomy." })),
   assetType: Type.Optional(Type.String({ description: "Intended output asset, e.g. hero image or app icon." })),
   scene: Type.Optional(Type.String()),
@@ -121,20 +109,6 @@ function loadConfig(ctx: ExtensionContext, dependencies: ImagegenExtensionDepend
   return loadImagegenConfig(ctx.cwd, ctx.isProjectTrusted(), { ...dependencies.config, env });
 }
 
-async function resolveCodexCredentials(
-  ctx: ExtensionContext,
-  env: Record<string, string | undefined>,
-): Promise<CodexSubscriptionCredentials> {
-  try {
-    const auth = await ctx.modelRegistry?.getProviderAuth?.("openai-codex");
-    const accessToken = auth?.auth.apiKey?.trim();
-    if (accessToken) return credentialsFromCodexAccessToken(accessToken, "pi-openai-codex");
-  } catch {
-    // Fall through to the Codex CLI login shared on this machine.
-  }
-  return readCodexSubscriptionCredentials(env);
-}
-
 function resolveConfiguredModel(
   modelId: string,
   models: ReturnType<typeof loadImagegenConfig>["models"],
@@ -151,41 +125,100 @@ function resolveConfiguredModel(
 function selectConfiguredModel(
   requestedModel: string | undefined,
   config: ReturnType<typeof loadImagegenConfig>,
-  env: Record<string, string | undefined>,
-): { model: ReturnType<typeof resolveConfiguredModel>; warning?: string } {
+): ReturnType<typeof resolveConfiguredModel> {
   const explicitModel = requestedModel?.trim();
-  const model = resolveConfiguredModel(explicitModel || config.defaultModel, config.models);
-  if (
-    !explicitModel &&
-    model.adapter === "openai-images" &&
-    model.apiKeyEnv === "OPENAI_API_KEY" &&
-    !env.OPENAI_API_KEY
-  ) {
-    const subscription = config.models["codex-subscription"];
-    if (subscription) {
-      return {
-        model: subscription,
-        warning: `OPENAI_API_KEY is unavailable; routed configured default '${model.id}' to Codex ChatGPT subscription image generation.`,
-      };
-    }
-  }
-  return { model };
+  return resolveConfiguredModel(explicitModel || config.defaultModel, config.models);
 }
 
-async function modelCredentialStatus(
-  model: ReturnType<typeof resolveConfiguredModel>,
-  env: Record<string, string | undefined>,
-  ctx: ExtensionContext,
-): Promise<string> {
-  if (model.adapter === "codex-subscription") {
-    try {
-      await resolveCodexCredentials(ctx, env);
-      return "ready";
-    } catch {
-      return (await inspectCodexSubscriptionAuth(env)).state;
-    }
+function validateProviderBaseUrl(value: string, provider: string): string {
+  const normalized = value.trim().replace(/\/+$/, "");
+  let parsed: URL;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    throw new Error(`Current Pi provider '${provider}' has an invalid base URL.`);
   }
-  return credentialStatus(model, env);
+  if ((parsed.protocol !== "https:" && parsed.protocol !== "http:") || parsed.username || parsed.password) {
+    throw new Error(`Current Pi provider '${provider}' must use an HTTP(S) base URL without embedded credentials.`);
+  }
+  return normalized;
+}
+
+function currentProviderIdentity(ctx: ExtensionContext) {
+  const currentModel = ctx.model;
+  if (!currentModel) throw new Error("No active Pi model is selected; select an API-key-backed OpenAI-compatible model first.");
+  if (currentModel.provider === "openai-codex" || currentModel.api === "openai-codex-responses") {
+    throw new Error(
+      "The active openai-codex provider uses a ChatGPT subscription and is not supported. Select an API-key-backed OpenAI-compatible provider.",
+    );
+  }
+  if (!SUPPORTED_PROVIDER_APIS.has(currentModel.api)) {
+    throw new Error(
+      `Current Pi provider '${currentModel.provider}' uses '${currentModel.api}', which is not compatible with /v1/images. Select a provider using openai-completions or openai-responses.`,
+    );
+  }
+  return currentModel;
+}
+
+function mergeProviderAuthHeaders(
+  configured: Readonly<Record<string, string | null>> | undefined,
+  apiKey: string,
+): Record<string, string> {
+  const headers = Object.fromEntries(
+    Object.entries(configured ?? {}).filter(
+      (entry): entry is [string, string] => entry[1] !== null && !REQUEST_OWNED_HEADERS.has(entry[0].toLowerCase()),
+    ),
+  );
+  const hasAuthorization = Object.keys(headers).some((name) => name.toLowerCase() === "authorization");
+  if (!hasAuthorization) headers.Authorization = `Bearer ${apiKey}`;
+  return headers;
+}
+
+async function resolveCurrentProviderRoute(
+  ctx: ExtensionContext,
+  requireApiKey: boolean,
+): Promise<ImageProviderRoute> {
+  const currentModel = currentProviderIdentity(ctx);
+  const staticBaseUrl = validateProviderBaseUrl(currentModel.baseUrl, currentModel.provider);
+  if (!requireApiKey) {
+    return {
+      provider: currentModel.provider,
+      api: currentModel.api,
+      baseUrl: staticBaseUrl,
+      headers: {},
+    };
+  }
+
+  const resolved = await ctx.modelRegistry.getApiKeyAndHeaders(currentModel);
+  if (!resolved.ok) {
+    throw new Error(`Could not resolve the current Pi provider API key: ${resolved.error}`);
+  }
+  const apiKey = resolved.apiKey?.trim();
+  if (!apiKey) {
+    throw new Error(
+      `Current Pi provider '${currentModel.provider}' does not expose an API key. Configure it with /login or select another API-key-backed provider.`,
+    );
+  }
+  return {
+    provider: currentModel.provider,
+    api: currentModel.api,
+    baseUrl: validateProviderBaseUrl(resolved.baseUrl ?? staticBaseUrl, currentModel.provider),
+    headers: mergeProviderAuthHeaders(resolved.headers, apiKey),
+  };
+}
+
+async function inspectCurrentProvider(ctx: ExtensionContext) {
+  try {
+    return { status: "ready" as const, route: await resolveCurrentProviderRoute(ctx, true) };
+  } catch (error) {
+    return {
+      status: "unavailable" as const,
+      provider: ctx.model?.provider,
+      api: ctx.model?.api,
+      baseUrl: ctx.model?.baseUrl,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 function capabilitySummary(model: ReturnType<typeof resolveConfiguredModel>): string {
@@ -252,7 +285,7 @@ async function createDownscaledCopies(
 function completionText(details: ImagegenToolDetails): string {
   if (details.status === "dry-run") {
     return [
-      `Dry run validated for ${details.model} (${details.adapter}).`,
+      `Dry run validated for ${details.model} via ${details.provider}.`,
       JSON.stringify(details.requestPreview, null, 2),
       details.warnings.length ? `Warnings:\n- ${details.warnings.join("\n- ")}` : "",
     ]
@@ -261,7 +294,7 @@ function completionText(details: ImagegenToolDetails): string {
   }
 
   const lines = [
-    `Generated ${details.paths.length} image${details.paths.length === 1 ? "" : "s"} with ${details.model} (${details.adapter}).`,
+    `Generated ${details.paths.length} image${details.paths.length === 1 ? "" : "s"} with ${details.model} via ${details.provider}.`,
     ...details.paths.map((path) => `- ${path}`),
   ];
   if (details.downscaledPaths.length) {
@@ -288,34 +321,35 @@ export function createImagegenExtension(dependencies: ImagegenExtensionDependenc
         name: "image_gen",
         label: "Image Gen",
         description:
-          "Generate or edit images with the default Codex/ChatGPT subscription, configured OpenAI GPT Image/ChatGPT Image, Google Imagen, Gemini native image, or custom OpenAI-compatible model. Saves files and returns inline image previews. Use imagegen_models before choosing a non-default model.",
+          "Generate or edit images through the active Pi provider's API key and OpenAI-compatible /v1/images endpoints. Saves files and returns inline image previews. Use imagegen_models to check provider compatibility and available image model aliases.",
         parameters: imageGenParameters,
         executionMode: "parallel",
 
         async execute(_toolCallId, params, signal, onUpdate, ctx) {
           const config = loadConfig(ctx, dependencies);
-          const env = currentEnv(dependencies);
-          const selected = selectConfiguredModel(params.model, config, env);
-          const model = selected.model;
+          const model = selectConfiguredModel(params.model, config);
           const mode = params.mode ?? (params.maskPath || (params.imagePaths?.length ?? 0) > 0 ? "edit" : "generate");
           const request: ImageGenRequest = { ...params, mode };
+          const route = await resolveCurrentProviderRoute(ctx, request.dryRun !== true);
           const inputImages = await loadInputImages(request.imagePaths ?? [], ctx.cwd, config.maxImageBytes);
           const mask = request.maskPath ? await loadMask(request.maskPath, ctx.cwd, config.maxImageBytes) : undefined;
           const finalPrompt = buildFinalPrompt(request);
           const baseWarnings = [
             ...config.warnings,
-            ...(selected.warning ? [selected.warning] : []),
             ...(transportWarning ? [transportWarning] : []),
           ];
 
           onUpdate?.({
-            content: [{ type: "text", text: `${request.dryRun ? "Validating" : "Generating"} with ${model.id}…` }],
+            content: [{ type: "text", text: `${request.dryRun ? "Validating" : "Generating"} with ${model.id} via ${route.provider}…` }],
             details: {
               status: "running",
               mode,
               model: model.id,
               upstreamModel: model.model,
               adapter: model.adapter,
+              provider: route.provider,
+              providerApi: route.api,
+              baseUrl: route.baseUrl,
               prompt: finalPrompt,
               paths: [],
               downscaledPaths: [],
@@ -328,8 +362,7 @@ export function createImagegenExtension(dependencies: ImagegenExtensionDependenc
 
           const runtime: AdapterRuntime = {
             fetch: fetchImpl,
-            env,
-            resolveCodexSubscriptionCredentials: () => resolveCodexCredentials(ctx, env),
+            route,
             signal,
             requestTimeoutMs: config.requestTimeoutMs,
             maxAttempts: config.maxAttempts,
@@ -349,6 +382,9 @@ export function createImagegenExtension(dependencies: ImagegenExtensionDependenc
               model: model.id,
               upstreamModel: model.model,
               adapter: model.adapter,
+              provider: route.provider,
+              providerApi: route.api,
+              baseUrl: route.baseUrl,
               prompt: finalPrompt,
               paths: [],
               downscaledPaths: [],
@@ -376,6 +412,9 @@ export function createImagegenExtension(dependencies: ImagegenExtensionDependenc
             model: model.id,
             upstreamModel: model.model,
             adapter: model.adapter,
+            provider: route.provider,
+            providerApi: route.api,
+            baseUrl: route.baseUrl,
             prompt: finalPrompt,
             paths: saved.map((item) => item.path),
             downscaledPaths,
@@ -404,34 +443,46 @@ export function createImagegenExtension(dependencies: ImagegenExtensionDependenc
       defineTool({
         name: "imagegen_models",
         label: "Imagegen Models",
-        description: "List configured image generation model aliases, adapters, capabilities, and credential readiness.",
+        description: "List image model aliases and check whether the active Pi provider can call /v1/images with its current API key.",
         parameters: Type.Object({}),
         async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
-          const env = currentEnv(dependencies);
           const config = loadConfig(ctx, dependencies);
-          const models = await Promise.all(
-            Object.values(config.models).map(async (model) => ({
-              id: model.id,
-              adapter: model.adapter,
-              upstreamModel: model.model,
-              credential: await modelCredentialStatus(model, env, ctx),
-              credentialEnv: model.apiKeyEnv,
-              capabilities: model.capabilities,
-              description: model.description,
-              isDefault: model.id === config.defaultModel,
-            })),
-          );
+          const provider = await inspectCurrentProvider(ctx);
+          const providerDetails = provider.status === "ready"
+            ? {
+                status: provider.status,
+                provider: provider.route.provider,
+                api: provider.route.api,
+                baseUrl: provider.route.baseUrl,
+              }
+            : provider;
+          const providerLine = provider.status === "ready"
+            ? `Current Pi provider: ${provider.route.provider} [${provider.route.api}; ready] — ${provider.route.baseUrl}`
+            : `Current Pi provider: ${provider.provider ?? "none"} [${provider.api ?? "unknown"}; unavailable]`;
+          const models = Object.values(config.models).map((model) => ({
+            id: model.id,
+            adapter: model.adapter,
+            upstreamModel: model.model,
+            capabilities: model.capabilities,
+            description: model.description,
+            isDefault: model.id === config.defaultModel,
+          }));
           const text = [
+            providerLine,
+            provider.status === "unavailable" ? `Reason: ${provider.error}` : "",
             `Default image model: ${config.defaultModel}`,
             ...models.map(
               (model) =>
-                `${model.isDefault ? "*" : "-"} ${model.id} [${model.adapter}; ${model.credential}] — ${capabilitySummary(config.models[model.id]!)} — ${model.description}`,
+                `${model.isDefault ? "*" : "-"} ${model.id} [${model.adapter}] — ${capabilitySummary(config.models[model.id]!)} — ${model.description}`,
             ),
             config.warnings.length ? `Warnings:\n- ${config.warnings.join("\n- ")}` : "",
           ]
             .filter(Boolean)
             .join("\n");
-          return { content: [{ type: "text", text }], details: { defaultModel: config.defaultModel, models, warnings: config.warnings } };
+          return {
+            content: [{ type: "text", text }],
+            details: { currentProvider: providerDetails, defaultModel: config.defaultModel, models, warnings: config.warnings },
+          };
         },
       }),
     );
@@ -442,11 +493,8 @@ export function createImagegenExtension(dependencies: ImagegenExtensionDependenc
         const command = args.trim().toLowerCase();
         const config = loadConfig(ctx, dependencies);
         if (command === "models") {
-          const env = currentEnv(dependencies);
-          const lines = await Promise.all(
-            Object.values(config.models).map(
-              async (model) => `${model.id} — ${model.adapter} — ${await modelCredentialStatus(model, env, ctx)}`,
-            ),
+          const lines = Object.values(config.models).map(
+            (model) => `${model.id} — ${model.adapter} — ${capabilitySummary(model)}`,
           );
           ctx.ui.notify(lines.join("\n"), "info");
           return;
@@ -467,12 +515,18 @@ export function createImagegenExtension(dependencies: ImagegenExtensionDependenc
           return;
         }
         const model = config.models[config.defaultModel];
-        const status = model ? await modelCredentialStatus(model, currentEnv(dependencies), ctx) : undefined;
+        const provider = await inspectCurrentProvider(ctx);
         ctx.ui.notify(
           model
-            ? `imagegen default: ${model.id} (${model.adapter}, ${status})\nOutput: ${config.outputDir}`
+            ? [
+                `imagegen default: ${model.id} (${model.adapter})`,
+                provider.status === "ready"
+                  ? `Provider: ${provider.route.provider} (${provider.route.api}, ready)\nEndpoint: ${provider.route.baseUrl}`
+                  : `Provider unavailable: ${provider.error}`,
+                `Output: ${config.outputDir}`,
+              ].join("\n")
             : "imagegen has no available model.",
-          model ? "info" : "error",
+          model && provider.status === "ready" ? "info" : "error",
         );
       },
     });

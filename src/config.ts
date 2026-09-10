@@ -17,27 +17,7 @@ export const DEFAULT_MAX_IMAGE_BYTES = 50 * 1024 * 1024;
 export const DEFAULT_MAX_RESPONSE_BYTES = 120 * 1024 * 1024;
 export const DEFAULT_INLINE_PREVIEW_LIMIT = 4;
 
-const OPENAI_BASE_URL = "https://api.openai.com/v1";
-const CODEX_SUBSCRIPTION_BASE_URL = "https://chatgpt.com/backend-api/codex";
-const GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
-const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const ADAPTERS = new Set<ImageAdapterName>([
-  "codex-subscription",
-  "openai-images",
-  "google-imagen",
-  "google-gemini",
-]);
-
-const CODEX_SUBSCRIPTION_CAPABILITIES: ModelCapabilities = {
-  generate: true,
-  edit: true,
-  references: true,
-  mask: false,
-  transparency: true,
-  inputFidelity: false,
-  maxInputImages: 5,
-  maxOutputsPerRequest: 1,
-};
+const ADAPTERS = new Set<ImageAdapterName>(["openai-images"]);
 
 const OPENAI_CAPABILITIES: ModelCapabilities = {
   generate: true,
@@ -52,31 +32,9 @@ const OPENAI_CAPABILITIES: ModelCapabilities = {
 
 const GPT_IMAGE_2_CAPABILITIES: ModelCapabilities = {
   ...OPENAI_CAPABILITIES,
-  // Matches the Codex imagegen compatibility policy. This can be overridden in imagegen.json.
+  // Conservative defaults; gateways may opt into newer capabilities in imagegen.json.
   transparency: false,
   inputFidelity: false,
-};
-
-const IMAGEN_CAPABILITIES: ModelCapabilities = {
-  generate: true,
-  edit: false,
-  references: false,
-  mask: false,
-  transparency: false,
-  inputFidelity: false,
-  maxInputImages: 0,
-  maxOutputsPerRequest: 4,
-};
-
-const GEMINI_IMAGE_CAPABILITIES: ModelCapabilities = {
-  generate: true,
-  edit: true,
-  references: true,
-  mask: false,
-  transparency: false,
-  inputFidelity: false,
-  maxInputImages: 16,
-  maxOutputsPerRequest: 1,
 };
 
 function cloneCapabilities(value: ModelCapabilities): ModelCapabilities {
@@ -85,104 +43,48 @@ function cloneCapabilities(value: ModelCapabilities): ModelCapabilities {
 
 function builtInModel(
   id: string,
-  adapter: ImageAdapterName,
   description: string,
   capabilities: ModelCapabilities,
 ): ImageModelDefinition {
   return {
     id,
-    adapter,
-    model: adapter === "codex-subscription" ? "gpt-image-2" : id,
-    baseUrl:
-      adapter === "codex-subscription"
-        ? CODEX_SUBSCRIPTION_BASE_URL
-        : adapter === "openai-images"
-          ? OPENAI_BASE_URL
-          : GOOGLE_BASE_URL,
-    apiKeyEnv:
-      adapter === "codex-subscription"
-        ? undefined
-        : adapter === "openai-images"
-          ? "OPENAI_API_KEY"
-          : "GEMINI_API_KEY",
-    headers: {},
+    adapter: "openai-images",
+    model: id,
     description,
     capabilities: cloneCapabilities(capabilities),
   };
 }
 
 export const BUILTIN_IMAGE_MODELS: Readonly<Record<string, ImageModelDefinition>> = Object.freeze({
-  "codex-subscription": builtInModel(
-    "codex-subscription",
-    "codex-subscription",
-    "Codex/ChatGPT subscription image generation through the official Codex backend contract; no Platform API key required.",
-    CODEX_SUBSCRIPTION_CAPABILITIES,
-  ),
   "gpt-image-2": builtInModel(
     "gpt-image-2",
-    "openai-images",
-    "Codex CLI parity default; strongest current GPT Image generation and editing model.",
+    "Default GPT Image generation and editing model.",
     GPT_IMAGE_2_CAPABILITIES,
   ),
   "gpt-image-2-2026-04-21": builtInModel(
     "gpt-image-2-2026-04-21",
-    "openai-images",
     "Pinned GPT Image 2 snapshot.",
     GPT_IMAGE_2_CAPABILITIES,
   ),
   "chatgpt-image-latest": builtInModel(
     "chatgpt-image-latest",
-    "openai-images",
     "Rolling ChatGPT Images production alias.",
     OPENAI_CAPABILITIES,
   ),
   "gpt-image-1.5": builtInModel(
     "gpt-image-1.5",
-    "openai-images",
     "GPT Image 1.5; native transparent output and high-fidelity edit controls.",
     OPENAI_CAPABILITIES,
   ),
   "gpt-image-1": builtInModel(
     "gpt-image-1",
-    "openai-images",
     "Legacy GPT Image model for compatibility.",
     OPENAI_CAPABILITIES,
   ),
   "gpt-image-1-mini": builtInModel(
     "gpt-image-1-mini",
-    "openai-images",
     "Lower-cost GPT Image model for drafts and preview batches.",
     OPENAI_CAPABILITIES,
-  ),
-  "imagen-4.0-generate-001": builtInModel(
-    "imagen-4.0-generate-001",
-    "google-imagen",
-    "Google Imagen 4 generation model.",
-    IMAGEN_CAPABILITIES,
-  ),
-  "imagen-4.0-ultra-generate-001": builtInModel(
-    "imagen-4.0-ultra-generate-001",
-    "google-imagen",
-    "Google Imagen 4 Ultra for highest-fidelity generation.",
-    IMAGEN_CAPABILITIES,
-  ),
-  "imagen-3.0-generate-002": builtInModel(
-    "imagen-3.0-generate-002",
-    "google-imagen",
-    "Google Imagen 3 compatibility model.",
-    IMAGEN_CAPABILITIES,
-  ),
-  "gemini-2.5-flash-image": builtInModel(
-    "gemini-2.5-flash-image",
-    "google-gemini",
-    "Fast Gemini native image generation and conversational editing.",
-    GEMINI_IMAGE_CAPABILITIES,
-  ),
-  "gemini-3-pro-image": builtInModel(
-    "gemini-3-pro-image",
-    "google-gemini",
-    "High-quality Gemini native image generation, multi-image composition, and editing.",
-    GEMINI_IMAGE_CAPABILITIES,
   ),
 });
 
@@ -222,25 +124,8 @@ function boundedInteger(value: unknown, minimum: number, maximum: number): numbe
   return value;
 }
 
-function defaultCapabilities(adapter: ImageAdapterName): ModelCapabilities {
-  if (adapter === "codex-subscription") return cloneCapabilities(CODEX_SUBSCRIPTION_CAPABILITIES);
-  if (adapter === "google-imagen") return cloneCapabilities(IMAGEN_CAPABILITIES);
-  if (adapter === "google-gemini") return cloneCapabilities(GEMINI_IMAGE_CAPABILITIES);
+function defaultCapabilities(): ModelCapabilities {
   return cloneCapabilities(OPENAI_CAPABILITIES);
-}
-
-function defaultBaseUrl(adapter: ImageAdapterName): string {
-  if (adapter === "codex-subscription") return CODEX_SUBSCRIPTION_BASE_URL;
-  return adapter === "openai-images" ? OPENAI_BASE_URL : GOOGLE_BASE_URL;
-}
-
-function defaultApiKeyEnv(adapter: ImageAdapterName): string | undefined {
-  if (adapter === "codex-subscription") return undefined;
-  return adapter === "openai-images" ? "OPENAI_API_KEY" : "GEMINI_API_KEY";
-}
-
-function normalizeBaseUrl(value: string): string {
-  return value.replace(/\/+$/, "");
 }
 
 function cloneModels(): Record<string, ImageModelDefinition> {
@@ -249,7 +134,6 @@ function cloneModels(): Record<string, ImageModelDefinition> {
       id,
       {
         ...model,
-        headers: { ...model.headers },
         capabilities: cloneCapabilities(model.capabilities),
       },
     ]),
@@ -298,35 +182,6 @@ function applyCapabilityOverrides(
   return next;
 }
 
-function mergeHeaders(
-  current: Record<string, string>,
-  value: unknown,
-  warningPrefix: string,
-  warnings: string[],
-): Record<string, string> {
-  if (value === undefined) return { ...current };
-  if (!isRecord(value)) {
-    warnings.push(`${warningPrefix}.headers must be an object; keeping existing headers.`);
-    return { ...current };
-  }
-
-  const next = { ...current };
-  for (const [name, rawValue] of Object.entries(value)) {
-    if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name)) {
-      warnings.push(`${warningPrefix}.headers contains an invalid header name; ignoring it.`);
-      continue;
-    }
-    if (rawValue === null || rawValue === false) {
-      delete next[name];
-    } else if (typeof rawValue === "string" && !/[\r\n]/.test(rawValue)) {
-      next[name] = rawValue;
-    } else {
-      warnings.push(`${warningPrefix}.headers.${name} must be a single-line string or null; ignoring it.`);
-    }
-  }
-  return next;
-}
-
 function applyModelOverrides(
   models: Record<string, ImageModelDefinition>,
   value: unknown,
@@ -371,63 +226,19 @@ function applyModelOverrides(
     }
 
     const sameAdapter = current?.adapter === adapter;
-    let upstreamModel = nonEmptyString(rawOverride.model) ?? (sameAdapter ? current.model : undefined) ?? id;
-    let baseUrlCandidate = normalizeBaseUrl(
-      nonEmptyString(rawOverride.baseUrl) ?? (sameAdapter ? current.baseUrl : defaultBaseUrl(adapter)),
-    );
-    if (adapter === "codex-subscription") {
-      if (upstreamModel !== "gpt-image-2") {
-        warnings.push(`${warningPrefix}.model is fixed to gpt-image-2 for Codex subscription parity; ignoring '${upstreamModel}'.`);
+    for (const key of ["baseUrl", "apiKeyEnv", "headers"] as const) {
+      if (Object.hasOwn(rawOverride, key)) {
+        warnings.push(`${warningPrefix}.${key} is ignored; image requests reuse the active Pi provider route and API key.`);
       }
-      if (baseUrlCandidate !== CODEX_SUBSCRIPTION_BASE_URL) {
-        warnings.push(`${warningPrefix}.baseUrl cannot override the official Codex subscription endpoint; ignoring it.`);
-      }
-      upstreamModel = "gpt-image-2";
-      baseUrlCandidate = CODEX_SUBSCRIPTION_BASE_URL;
-    }
-    try {
-      const parsedBaseUrl = new URL(baseUrlCandidate);
-      if (parsedBaseUrl.protocol !== "https:" && parsedBaseUrl.protocol !== "http:") {
-        throw new Error("only HTTP(S) URLs are supported");
-      }
-    } catch (error) {
-      warnings.push(
-        `${warningPrefix}.baseUrl is invalid: ${error instanceof Error ? error.message : String(error)}; ignoring this model.`,
-      );
-      continue;
-    }
-    let apiKeyEnv: string | undefined = sameAdapter ? current.apiKeyEnv : defaultApiKeyEnv(adapter);
-    if (Object.hasOwn(rawOverride, "apiKeyEnv")) {
-      const requestedEnv = nonEmptyString(rawOverride.apiKeyEnv);
-      if (requestedEnv && !ENV_NAME_PATTERN.test(requestedEnv)) {
-        warnings.push(`${warningPrefix}.apiKeyEnv is not a valid environment variable name; ignoring this model.`);
-        continue;
-      }
-      apiKeyEnv = requestedEnv;
-    }
-    if (adapter === "codex-subscription") {
-      if (Object.hasOwn(rawOverride, "apiKeyEnv")) {
-        warnings.push(`${warningPrefix}.apiKeyEnv is ignored because Codex subscription uses ChatGPT OAuth.`);
-      }
-      apiKeyEnv = undefined;
-    }
-    if (adapter === "codex-subscription" && rawOverride.headers !== undefined) {
-      warnings.push(`${warningPrefix}.headers are ignored to prevent OAuth credential forwarding.`);
     }
 
     models[id] = {
       id,
       adapter,
-      model: upstreamModel,
-      baseUrl: baseUrlCandidate,
-      apiKeyEnv,
-      headers:
-        adapter === "codex-subscription"
-          ? {}
-          : mergeHeaders(sameAdapter ? current.headers : {}, rawOverride.headers, warningPrefix, warnings),
+      model: nonEmptyString(rawOverride.model) ?? (sameAdapter ? current.model : undefined) ?? id,
       description: nonEmptyString(rawOverride.description) ?? current?.description ?? `Custom ${adapter} image model.`,
       capabilities: applyCapabilityOverrides(
-        sameAdapter ? current.capabilities : defaultCapabilities(adapter),
+        sameAdapter ? current.capabilities : defaultCapabilities(),
         rawOverride.capabilities,
         warningPrefix,
         warnings,
@@ -489,7 +300,7 @@ export function loadImagegenConfig(
   const warnings: string[] = [];
   const loadedConfigPaths: string[] = [];
   const state: MutableConfigState = {
-    defaultModel: "codex-subscription",
+    defaultModel: "gpt-image-2",
     outputDir: DEFAULT_OUTPUT_DIR,
     requestTimeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
     maxAttempts: DEFAULT_MAX_ATTEMPTS,
@@ -514,12 +325,7 @@ export function loadImagegenConfig(
   }
 
   if (!state.models[state.defaultModel]) {
-    const fallback =
-      state.models["codex-subscription"]
-        ? "codex-subscription"
-        : state.models["gpt-image-2"]
-          ? "gpt-image-2"
-          : Object.keys(state.models)[0];
+    const fallback = state.models["gpt-image-2"] ? "gpt-image-2" : Object.keys(state.models)[0];
     if (fallback) {
       warnings.push(`Configured default model '${state.defaultModel}' is unavailable; using '${fallback}'.`);
       state.defaultModel = fallback;
@@ -527,46 +333,4 @@ export function loadImagegenConfig(
   }
 
   return { ...state, loadedConfigPaths, warnings };
-}
-
-function interpolateEnvironment(value: string, env: Record<string, string | undefined>): string {
-  const escapedDollar = "\u0000PI_IMAGEGEN_DOLLAR\u0000";
-  const protectedValue = value.replaceAll("$$", escapedDollar);
-  const replaced = protectedValue.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (_match, braced, plain) => {
-    const name = (braced ?? plain) as string;
-    const resolved = env[name];
-    if (resolved === undefined) throw new Error(`Required environment variable '${name}' is not set.`);
-    return resolved;
-  });
-  return replaced.replaceAll(escapedDollar, "$");
-}
-
-export function resolveModelHeaders(
-  model: ImageModelDefinition,
-  env: Record<string, string | undefined>,
-): Record<string, string> {
-  const headers: Record<string, string> = {};
-  if (model.apiKeyEnv) {
-    const key = env[model.apiKeyEnv];
-    if (!key) {
-      throw new Error(
-        `Model '${model.id}' requires ${model.apiKeyEnv}. Set it in your environment; do not paste API keys into chat.`,
-      );
-    }
-    if (model.adapter === "openai-images") headers.Authorization = `Bearer ${key}`;
-    else headers["x-goog-api-key"] = key;
-  }
-
-  for (const [name, value] of Object.entries(model.headers)) {
-    headers[name] = interpolateEnvironment(value, env);
-  }
-  return headers;
-}
-
-export function credentialStatus(
-  model: ImageModelDefinition,
-  env: Record<string, string | undefined>,
-): "ready" | "missing" | "not-required" {
-  if (!model.apiKeyEnv) return "not-required";
-  return env[model.apiKeyEnv] ? "ready" : "missing";
 }

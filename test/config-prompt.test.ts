@@ -4,31 +4,24 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
-import {
-  BUILTIN_IMAGE_MODELS,
-  credentialStatus,
-  loadImagegenConfig,
-  resolveModelHeaders,
-} from "../src/config.ts";
+import { BUILTIN_IMAGE_MODELS, loadImagegenConfig } from "../src/config.ts";
 import { buildFinalPrompt } from "../src/prompt.ts";
 
-test("built-in catalog covers Codex subscription, OpenAI, Imagen, and Gemini image models", () => {
-  assert.equal(BUILTIN_IMAGE_MODELS["codex-subscription"]?.adapter, "codex-subscription");
-  assert.equal(BUILTIN_IMAGE_MODELS["codex-subscription"]?.model, "gpt-image-2");
-  assert.equal(BUILTIN_IMAGE_MODELS["codex-subscription"]?.capabilities.maxInputImages, 5);
+test("built-in catalog contains only OpenAI Images models and defaults to GPT Image 2", () => {
   assert.equal(BUILTIN_IMAGE_MODELS["gpt-image-2"]?.adapter, "openai-images");
   assert.equal(BUILTIN_IMAGE_MODELS["chatgpt-image-latest"]?.adapter, "openai-images");
-  assert.equal(BUILTIN_IMAGE_MODELS["imagen-4.0-ultra-generate-001"]?.adapter, "google-imagen");
-  assert.equal(BUILTIN_IMAGE_MODELS["gemini-3-pro-image"]?.adapter, "google-gemini");
   assert.equal(BUILTIN_IMAGE_MODELS["gpt-image-2"]?.capabilities.transparency, false);
+  assert.equal(BUILTIN_IMAGE_MODELS["codex-subscription"], undefined);
+  assert.equal(BUILTIN_IMAGE_MODELS["gemini-3-pro-image"], undefined);
+
   const defaults = loadImagegenConfig("/virtual/project", false, {
     home: "/virtual/home",
     exists: () => false,
   });
-  assert.equal(defaults.defaultModel, "codex-subscription");
+  assert.equal(defaults.defaultModel, "gpt-image-2");
 });
 
-test("global and trusted project config merge safely", async () => {
+test("global and trusted project config merge image aliases without independent credentials", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-imagegen-config-"));
   const home = join(root, "home");
   const cwd = join(root, "project");
@@ -46,11 +39,12 @@ test("global and trusted project config merge safely", async () => {
         "local-flux": {
           adapter: "openai-images",
           model: "flux.dev",
-          baseUrl: "http://127.0.0.1:9000/v1/",
-          apiKeyEnv: null,
+          baseUrl: "https://ignored.invalid/v1",
+          apiKeyEnv: "IGNORED_IMAGE_KEY",
+          headers: { Authorization: "Bearer ${IGNORED_IMAGE_KEY}" },
           capabilities: { edit: false, references: false, mask: false, maxInputImages: 0 },
         },
-        invalid: { model: "missing-adapter" },
+        invalid: { adapter: "google-gemini", model: "gemini-image" },
       },
     }),
   );
@@ -60,7 +54,7 @@ test("global and trusted project config merge safely", async () => {
       outputDir: "project-images",
       models: {
         "gpt-image-1": false,
-        "local-flux": { headers: { Authorization: "Bearer ${LOCAL_IMAGE_TOKEN}" } },
+        "local-flux": { description: "Project Flux alias." },
       },
     }),
   );
@@ -69,16 +63,16 @@ test("global and trusted project config merge safely", async () => {
     const config = loadImagegenConfig(cwd, true, { home, env: {} });
     assert.equal(config.defaultModel, "local-flux");
     assert.equal(config.outputDir, "project-images");
-    assert.equal(config.models["local-flux"]?.baseUrl, "http://127.0.0.1:9000/v1");
-    assert.equal(config.models["local-flux"]?.apiKeyEnv, undefined);
+    assert.equal(config.models["local-flux"]?.model, "flux.dev");
+    assert.equal(config.models["local-flux"]?.description, "Project Flux alias.");
+    assert.equal(config.models["local-flux"]?.capabilities.edit, false);
     assert.equal(config.models["gpt-image-1"], undefined);
     assert.equal(config.models.invalid, undefined);
     assert.equal(config.loadedConfigPaths.length, 2);
-    assert.match(config.warnings.join("\n"), /adapter is required/);
-
-    const headers = resolveModelHeaders(config.models["local-flux"]!, { LOCAL_IMAGE_TOKEN: "secret-token" });
-    assert.deepEqual(headers, { Authorization: "Bearer secret-token" });
-    assert.equal(credentialStatus(config.models["local-flux"]!, {}), "not-required");
+    assert.match(config.warnings.join("\n"), /baseUrl is ignored/);
+    assert.match(config.warnings.join("\n"), /apiKeyEnv is ignored/);
+    assert.match(config.warnings.join("\n"), /headers is ignored/);
+    assert.match(config.warnings.join("\n"), /adapter is unsupported: google-gemini/);
 
     const untrusted = loadImagegenConfig(cwd, false, { home, env: {} });
     assert.equal(untrusted.outputDir, "global-images");
@@ -88,61 +82,26 @@ test("global and trusted project config merge safely", async () => {
   }
 });
 
-test("switching an existing alias to another adapter resets unsafe inherited defaults", () => {
+test("removed subscription and Google adapters cannot be restored through config", () => {
   const config = loadImagegenConfig("/virtual/project", false, {
     home: "/virtual/home",
     exists: () => true,
     readFile: () =>
       JSON.stringify({
+        defaultModel: "codex-subscription",
         models: {
-          "gpt-image-1": {
-            adapter: "google-imagen",
-            model: "imagen-custom",
-            baseUrl: "https://generativelanguage.googleapis.com/v1beta/",
-            apiKeyEnv: null,
-          },
+          "codex-subscription": { adapter: "codex-subscription", model: "gpt-image-2" },
+          "google-image": { adapter: "google-imagen", model: "imagen-4.0-generate-001" },
         },
       }),
   });
-  const switched = config.models["gpt-image-1"]!;
-  assert.equal(switched.adapter, "google-imagen");
-  assert.equal(switched.baseUrl, "https://generativelanguage.googleapis.com/v1beta");
-  assert.equal(switched.apiKeyEnv, undefined);
-  assert.equal(switched.capabilities.edit, false);
-  assert.equal(switched.capabilities.mask, false);
-});
 
-test("Codex subscription configuration cannot redirect OAuth credentials", () => {
-  const config = loadImagegenConfig("/virtual/project", false, {
-    home: "/virtual/home",
-    exists: () => true,
-    readFile: () =>
-      JSON.stringify({
-        models: {
-          "codex-subscription": {
-            model: "other-model",
-            baseUrl: "https://attacker.invalid/capture",
-            apiKeyEnv: "SOME_TOKEN",
-            headers: { "x-forwarded-secret": "${SOME_TOKEN}" },
-          },
-        },
-      }),
-  });
-  const subscription = config.models["codex-subscription"]!;
-  assert.equal(subscription.model, "gpt-image-2");
-  assert.equal(subscription.baseUrl, "https://chatgpt.com/backend-api/codex");
-  assert.equal(subscription.apiKeyEnv, undefined);
-  assert.deepEqual(subscription.headers, {});
-  assert.match(config.warnings.join("\n"), /cannot override the official Codex subscription endpoint/);
-  assert.match(config.warnings.join("\n"), /headers are ignored/);
-});
-
-test("credential errors name only the environment variable", () => {
-  const model = BUILTIN_IMAGE_MODELS["gpt-image-2"]!;
-  assert.throws(() => resolveModelHeaders(model, {}), /OPENAI_API_KEY/);
-  assert.deepEqual(resolveModelHeaders(model, { OPENAI_API_KEY: "top-secret" }), {
-    Authorization: "Bearer top-secret",
-  });
+  assert.equal(config.models["codex-subscription"], undefined);
+  assert.equal(config.models["google-image"], undefined);
+  assert.equal(config.defaultModel, "gpt-image-2");
+  assert.match(config.warnings.join("\n"), /adapter is unsupported: codex-subscription/);
+  assert.match(config.warnings.join("\n"), /adapter is unsupported: google-imagen/);
+  assert.match(config.warnings.join("\n"), /using 'gpt-image-2'/);
 });
 
 test("structured prompt preserves exact text and edit invariants", () => {

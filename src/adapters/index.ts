@@ -1,57 +1,5 @@
-import { runCodexSubscription } from "./codex-subscription.ts";
-import { runGoogleGemini } from "./google-gemini.ts";
-import { runGoogleImagen } from "./google-imagen.ts";
 import { runOpenAIImages } from "./openai.ts";
-import type { AdapterRequest, AdapterResult, AdapterRuntime, ImageGenRequest } from "../types.ts";
-
-const IMAGEN_ASPECT_RATIOS = new Set(["1:1", "3:4", "4:3", "9:16", "16:9"]);
-const GEMINI_ASPECT_RATIOS = new Set([
-  "1:1",
-  "2:3",
-  "3:2",
-  "3:4",
-  "4:3",
-  "4:5",
-  "5:4",
-  "9:16",
-  "16:9",
-  "21:9",
-]);
-
-function greatestCommonDivisor(a: number, b: number): number {
-  let x = a;
-  let y = b;
-  while (y !== 0) {
-    const remainder = x % y;
-    x = y;
-    y = remainder;
-  }
-  return x;
-}
-
-function normalizeGoogleDimensions(
-  request: ImageGenRequest,
-  adapter: "google-imagen" | "google-gemini",
-): { request: ImageGenRequest; warnings: string[] } {
-  const warnings: string[] = [];
-  if (!request.size || request.size === "auto") return { request, warnings };
-  const match = /^(\d+)x(\d+)$/.exec(request.size);
-  if (!match) throw new Error("size must be 'auto' or WIDTHxHEIGHT, for example 1024x1024.");
-  const width = Number(match[1]);
-  const height = Number(match[2]);
-  if (width < 1 || height < 1) throw new Error("size width and height must be positive.");
-  const divisor = greatestCommonDivisor(width, height);
-  const ratio = `${width / divisor}:${height / divisor}`;
-  const supported = adapter === "google-imagen" ? IMAGEN_ASPECT_RATIOS : GEMINI_ASPECT_RATIOS;
-  if (!supported.has(ratio)) {
-    throw new Error(`${adapter} cannot represent exact size ${request.size}; use one of these aspect ratios: ${[...supported].join(", ")}.`);
-  }
-  if (request.aspectRatio && request.aspectRatio !== ratio) {
-    throw new Error(`size ${request.size} implies aspect ratio ${ratio}, but aspectRatio is ${request.aspectRatio}.`);
-  }
-  warnings.push(`${adapter} maps size ${request.size} to aspect ratio ${ratio}; exact pixel dimensions are provider-controlled.`);
-  return { request: { ...request, aspectRatio: request.aspectRatio ?? ratio }, warnings };
-}
+import type { AdapterRequest, AdapterResult, AdapterRuntime } from "../types.ts";
 
 function validateRequest(input: AdapterRequest): { input: AdapterRequest; warnings: string[] } {
   const { request, model, inputImages, mask } = input;
@@ -102,24 +50,6 @@ function validateRequest(input: AdapterRequest): { input: AdapterRequest; warnin
   if (request.inputRoles && request.inputRoles.length > inputImages.length) {
     warnings.push("Extra inputRoles entries were ignored because there are fewer input images.");
   }
-  if (request.aspectRatio && !/^\d+:\d+$/.test(request.aspectRatio)) {
-    throw new Error("aspectRatio must use WIDTH:HEIGHT syntax, for example 16:9.");
-  }
-
-  if (model.adapter === "google-imagen" || model.adapter === "google-gemini") {
-    const dimensions = normalizeGoogleDimensions(normalizedRequest, model.adapter);
-    normalizedRequest = dimensions.request;
-    warnings.push(...dimensions.warnings);
-    if (request.quality !== undefined) warnings.push(`${model.adapter} ignores quality; use imageSize instead.`);
-    if (request.background && request.background !== "auto") warnings.push(`${model.adapter} ignores non-transparent background controls.`);
-  }
-  if (model.adapter === "google-imagen" && request.outputFormat === "webp") {
-    throw new Error("Google Imagen supports PNG or JPEG output, not WebP.");
-  }
-  if (model.adapter === "google-imagen" && request.imageSize === "4K") {
-    throw new Error("Google Imagen supports 1K or 2K imageSize, not 4K.");
-  }
-
   return { input: { ...input, request: normalizedRequest }, warnings };
 }
 
@@ -128,15 +58,6 @@ export async function runImageAdapter(
   runtime: AdapterRuntime,
 ): Promise<AdapterResult> {
   const validated = validateRequest(input);
-  let result: AdapterResult;
-  if (validated.input.model.adapter === "codex-subscription") {
-    result = await runCodexSubscription(validated.input, runtime);
-  } else if (validated.input.model.adapter === "openai-images") {
-    result = await runOpenAIImages(validated.input, runtime);
-  } else if (validated.input.model.adapter === "google-imagen") {
-    result = await runGoogleImagen(validated.input, runtime);
-  } else {
-    result = await runGoogleGemini(validated.input, runtime);
-  }
+  const result = await runOpenAIImages(validated.input, runtime);
   return { ...result, warnings: [...validated.warnings, ...result.warnings] };
 }
